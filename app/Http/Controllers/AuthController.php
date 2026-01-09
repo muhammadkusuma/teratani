@@ -13,7 +13,7 @@ class AuthController extends Controller
 {
     /**
      * =========================
-     * TAMPILKAN FORM LOGIN
+     * FORM LOGIN
      * =========================
      */
     public function loginForm()
@@ -23,7 +23,7 @@ class AuthController extends Controller
 
     /**
      * =========================
-     * PROSES LOGIN USER
+     * PROSES LOGIN
      * =========================
      */
     public function login(Request $request)
@@ -33,7 +33,6 @@ class AuthController extends Controller
             'password' => 'required|string',
         ]);
 
-        // Cari user berdasarkan username ATAU email
         $user = User::where('username', $request->username)
             ->orWhere('email', $request->username)
             ->first();
@@ -51,9 +50,35 @@ class AuthController extends Controller
         }
 
         /**
-         * ======================================
-         * AMBIL DATA TENANT USER
-         * ======================================
+         * =========================
+         * SET SESSION USER
+         * =========================
+         */
+        Session::put('auth', true);
+        Session::put('user_id', $user->id_user);
+        Session::put('username', $user->username);
+        Session::put('is_superadmin', (bool) $user->is_superadmin);
+
+        /**
+         * ==================================================
+         * BYPASS KHUSUS SUPERADMIN (TANPA TENANT)
+         * ==================================================
+         */
+        if ($user->is_superadmin) {
+            Session::put('tenant_id', null);
+            Session::put('tenant_name', 'SUPER ADMIN');
+            Session::put('tenant_role', 'SUPERADMIN');
+
+            Session::forget('toko_id');
+            Session::forget('toko_name');
+
+            return redirect()->route('dashboard.superadmin');
+        }
+
+        /**
+         * =========================
+         * USER NON SUPERADMIN
+         * =========================
          */
         $tenantMapping = DB::table('user_tenant_mapping')
             ->where('id_user', $user->id_user)
@@ -67,32 +92,20 @@ class AuthController extends Controller
         }
 
         /**
-         * ======================================
-         * SET SESSION USER
-         * ======================================
-         */
-        Session::put('auth', true);
-        Session::put('user_id', $user->id_user);
-        Session::put('username', $user->username);
-        Session::put('is_superadmin', $user->is_superadmin);
-
-        /**
-         * ======================================
-         * JIKA USER HANYA PUNYA 1 TENANT
-         * ======================================
+         * =========================
+         * JIKA HANYA 1 TENANT
+         * =========================
          */
         if ($tenantMapping->count() === 1) {
-
             $tenantId = $tenantMapping->first()->id_tenant;
             $this->setTenantSession($user->id_user, $tenantId);
-
             return redirect()->route('dashboard');
         }
 
         /**
-         * ======================================
-         * JIKA USER PUNYA BANYAK TENANT
-         * ======================================
+         * =========================
+         * JIKA BANYAK TENANT
+         * =========================
          */
         return redirect()->route('tenant.select');
     }
@@ -106,33 +119,42 @@ class AuthController extends Controller
     {
         $tenant = Tenant::findOrFail($id_tenant);
 
-        // Validasi user benar punya akses tenant
-        $mapping = DB::table('user_tenant_mapping')
-            ->where('id_user', $id_user)
-            ->where('id_tenant', $id_tenant)
-            ->first();
+        /**
+         * ======================================
+         * BYPASS VALIDASI TENANT UNTUK SUPERADMIN
+         * ======================================
+         */
+        if (! Session::get('is_superadmin')) {
 
-        if (! $mapping) {
-            abort(403, 'Akses tenant ditolak');
+            $mapping = DB::table('user_tenant_mapping')
+                ->where('id_user', $id_user)
+                ->where('id_tenant', $id_tenant)
+                ->first();
+
+            if (! $mapping) {
+                abort(403, 'Akses tenant ditolak');
+            }
+
+            Session::put('tenant_role', $mapping->role_in_tenant);
+        } else {
+            Session::put('tenant_role', 'SUPERADMIN');
         }
 
         Session::put('tenant_id', $tenant->id_tenant);
         Session::put('tenant_name', $tenant->nama_bisnis);
-        Session::put('tenant_role', $mapping->role_in_tenant);
 
         /**
-         * ======================================
+         * =========================
          * PILIH TOKO DEFAULT
-         * ======================================
-         * Prioritas:
-         * 1. Toko pusat
-         * 2. Toko pertama yg diizinkan
+         * =========================
          */
         $toko = Toko::where('id_tenant', $tenant->id_tenant)
-            ->whereIn('id_toko', function ($query) use ($id_user) {
-                $query->select('id_toko')
-                    ->from('user_toko_access')
-                    ->where('id_user', $id_user);
+            ->when(! Session::get('is_superadmin'), function ($query) use ($id_user) {
+                $query->whereIn('id_toko', function ($q) use ($id_user) {
+                    $q->select('id_toko')
+                        ->from('user_toko_access')
+                        ->where('id_user', $id_user);
+                });
             })
             ->orderByDesc('is_pusat')
             ->first();
