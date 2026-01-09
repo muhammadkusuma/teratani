@@ -18,11 +18,18 @@ class PembayaranPiutangController extends Controller
      */
     public function index(Request $request)
     {
-        $user   = Auth::user();
-        $idToko = session('id_toko');
+        $user = Auth::user();
+
+        // PERBAIKAN: Gunakan 'toko_id' sesuai yang diset di AuthController
+        $idToko = session('toko_id');
+
+        // Validasi jika session toko hilang (misal session expired tapi user masih login)
+        if (! $idToko) {
+            return response()->json(['message' => 'Sesi toko tidak ditemukan, silakan pilih toko kembali.'], 400);
+        }
 
         if (! UserTokoAccess::userHasAccessToToko($user->id_user, $idToko)) {
-            abort(403, 'Tidak punya akses ke toko');
+            abort(403, 'Tidak punya akses ke toko ini');
         }
 
         $query = PembayaranPiutang::with([
@@ -55,11 +62,18 @@ class PembayaranPiutangController extends Controller
      */
     public function show($id)
     {
+        // Pastikan juga mengecek kepemilikan toko saat show detail (best practice)
+        $idToko = session('toko_id');
+
         $pembayaran = PembayaranPiutang::with([
             'kartuPiutang.pelanggan',
             'kartuPiutang.penjualan',
             'user',
-        ])->findOrFail($id);
+        ])
+            ->whereHas('kartuPiutang', function ($q) use ($idToko) {
+                $q->where('id_toko', $idToko);
+            })
+            ->findOrFail($id);
 
         return response()->json($pembayaran);
     }
@@ -78,26 +92,34 @@ class PembayaranPiutangController extends Controller
             'keterangan'   => 'nullable|string',
         ]);
 
-        $user   = Auth::user();
-        $idToko = session('id_toko');
+        $user = Auth::user();
+
+        // PERBAIKAN: Gunakan 'toko_id'
+        $idToko = session('toko_id');
+
+        if (! $idToko) {
+            return response()->json(['message' => 'Sesi toko tidak valid.'], 400);
+        }
 
         DB::beginTransaction();
 
         try {
             /**
              * =============================
-             * 1. LOCK PIUTANG
+             * 1. LOCK PIUTANG & VALIDASI
              * =============================
              */
             $piutang = KartuPiutang::lockForUpdate()
                 ->findOrFail($request->id_piutang);
 
-            if ($piutang->id_toko !== $idToko) {
+            // Validasi apakah piutang ini milik toko yang sedang aktif
+            if ($piutang->id_toko != $idToko) {
                 abort(403, 'Piutang bukan milik toko ini');
             }
 
             if ($request->jumlah_bayar > $piutang->sisa_piutang) {
-                abort(400, 'Jumlah bayar melebihi sisa piutang');
+                // Gunakan response JSON agar frontend bisa menangkap error 400 dengan rapi
+                return response()->json(['message' => 'Jumlah bayar melebihi sisa piutang'], 400);
             }
 
             /**
@@ -111,12 +133,14 @@ class PembayaranPiutangController extends Controller
                 'metode_bayar' => $request->metode_bayar,
                 'keterangan'   => $request->keterangan,
                 'id_user'      => $user->id_user,
+                'tgl_bayar'    => now(), // Pastikan tanggal terisi jika di database tidak default timestamp
             ]);
 
             /**
              * =============================
              * 3. UPDATE KARTU PIUTANG
              * =============================
+             * Asumsi: Method tambahPembayaran() ada di model KartuPiutang
              */
             $piutang->tambahPembayaran($request->jumlah_bayar);
 
@@ -127,13 +151,20 @@ class PembayaranPiutangController extends Controller
              */
             $penjualan = Penjualan::find($piutang->id_penjualan);
 
+            // Refresh piutang untuk mendapatkan status terbaru setelah update
+            $piutang->refresh();
+
             if ($piutang->status === 'Lunas') {
                 $penjualan->update([
                     'status_bayar' => 'Lunas',
+                    // Logic ini mungkin perlu disesuaikan jika ada diskon/pajak,
+                    // tapi jika total_netto adalah final price, maka ini benar.
                     'jumlah_bayar' => $penjualan->total_netto,
                     'kembalian'    => 0,
                 ]);
             } else {
+                // Update jumlah bayar akumulatif
+                // Asumsi: jumlah_bayar di penjualan adalah total uang masuk
                 $penjualan->update([
                     'status_bayar' => 'Sebagian',
                     'jumlah_bayar' => $penjualan->total_netto - $piutang->sisa_piutang,
@@ -159,9 +190,8 @@ class PembayaranPiutangController extends Controller
 
     /**
      * =========================================
-     * HAPUS PEMBAYARAN (ROLLBACK PIUTANG)
+     * HAPUS PEMBAYARAN (ROLLBACK)
      * =========================================
-     * Optional: untuk admin / koreksi input
      */
     public function destroy($id)
     {
@@ -171,12 +201,22 @@ class PembayaranPiutangController extends Controller
             $pembayaran = PembayaranPiutang::lockForUpdate()->findOrFail($id);
             $piutang    = KartuPiutang::lockForUpdate()->findOrFail($pembayaran->id_piutang);
 
-            // rollback nilai
+            // Cek akses toko
+            if ($piutang->id_toko != session('toko_id')) {
+                abort(403, 'Akses ditolak');
+            }
+
+            // Rollback nilai di Kartu Piutang
+            // Manual calculation karena mungkin tidak ada method 'kurangiPembayaran'
             $piutang->sudah_dibayar -= $pembayaran->jumlah_bayar;
             $piutang->sisa_piutang += $pembayaran->jumlah_bayar;
-            $piutang->refreshStatus();
 
-            // update penjualan
+            // Update status piutang
+            // Jika sisa piutang > 0, status jadi Belum Lunas
+            $piutang->status = ($piutang->sisa_piutang <= 0) ? 'Lunas' : 'Belum Lunas';
+            $piutang->save();
+
+            // Update Penjualan
             $penjualan = Penjualan::find($piutang->id_penjualan);
             $penjualan->update([
                 'status_bayar' => $piutang->status === 'Lunas' ? 'Lunas' : 'Belum Lunas',
@@ -188,7 +228,7 @@ class PembayaranPiutangController extends Controller
             DB::commit();
 
             return response()->json([
-                'message' => 'Pembayaran berhasil dihapus',
+                'message' => 'Pembayaran berhasil dihapus (Rollback)',
             ]);
 
         } catch (\Exception $e) {
