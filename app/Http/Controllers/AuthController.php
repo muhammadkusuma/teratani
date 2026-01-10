@@ -5,6 +5,7 @@ use App\Models\Tenant;
 use App\Models\Toko;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth; // <--- PENTING: Tambahkan Import Auth
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Session;
@@ -50,8 +51,16 @@ class AuthController extends Controller
         }
 
         /**
+         * ==================================================
+         * PERBAIKAN UTAMA: LOGIN KE LARAVEL AUTH SYSTEM
+         * ==================================================
+         * Ini wajib agar middleware('auth') tidak menendang user
+         */
+        Auth::login($user); // <--- Baris Kunci
+
+        /**
          * =========================
-         * SET SESSION USER
+         * SET SESSION TAMBAHAN
          * =========================
          */
         Session::put('auth', true);
@@ -86,6 +95,7 @@ class AuthController extends Controller
             ->get();
 
         if ($tenantMapping->count() === 0) {
+            Auth::logout(); // Logout jika tidak punya tenant
             return back()->withErrors([
                 'username' => 'User belum terdaftar pada tenant manapun',
             ]);
@@ -119,13 +129,7 @@ class AuthController extends Controller
     {
         $tenant = Tenant::findOrFail($id_tenant);
 
-        /**
-         * ======================================
-         * BYPASS VALIDASI TENANT UNTUK SUPERADMIN
-         * ======================================
-         */
         if (! Session::get('is_superadmin')) {
-
             $mapping = DB::table('user_tenant_mapping')
                 ->where('id_user', $id_user)
                 ->where('id_tenant', $id_tenant)
@@ -143,11 +147,7 @@ class AuthController extends Controller
         Session::put('tenant_id', $tenant->id_tenant);
         Session::put('tenant_name', $tenant->nama_bisnis);
 
-        /**
-         * =========================
-         * PILIH TOKO DEFAULT
-         * =========================
-         */
+        // Pilih Toko Default
         $toko = Toko::where('id_tenant', $tenant->id_tenant)
             ->when(! Session::get('is_superadmin'), function ($query) use ($id_user) {
                 $query->whereIn('id_toko', function ($q) use ($id_user) {
@@ -175,7 +175,10 @@ class AuthController extends Controller
      */
     public function logout(Request $request)
     {
-        Session::flush();
+        Auth::logout();                         // <--- Gunakan Auth logout resmi
+        $request->session()->invalidate();      // Bersihkan session ID
+        $request->session()->regenerateToken(); // Regenerate CSRF token
+
         return redirect()->route('login.form');
     }
 }

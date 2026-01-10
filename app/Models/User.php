@@ -1,45 +1,59 @@
 <?php
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
+// 1. HAPUS atau GANTI baris ini:
+// use Illuminate\Database\Eloquent\Model;
 
-class User extends Model
+// 2. GUNAKAN class ini sebagai penggantinya:
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+
+// 3. Pastikan class User extends 'Authenticatable', BUKAN 'Model'
+class User extends Authenticatable
 {
-    protected $table      = 'users';
-    protected $primaryKey = 'id_user';
-    public $timestamps    = false;
+    use HasFactory, Notifiable;
 
+    protected $table      = 'users';
+    protected $primaryKey = 'id_user'; // Sesuaikan dengan primary key kamu
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
     protected $fillable = [
         'username',
-        'password',
-        'nama_lengkap',
         'email',
-        'no_hp',
-        'is_superadmin',
+        'password',
+        'role',
         'is_active',
+        'is_superadmin',
+        // Tambahkan kolom lain yang ingin bisa diisi
     ];
 
+    /**
+     * The attributes that should be hidden for serialization.
+     *
+     * @var array<int, string>
+     */
     protected $hidden = [
         'password',
+        'remember_token',
     ];
 
-    public function tenants()
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
     {
-        return $this->belongsToMany(
-            Tenant::class,
-            'user_tenant_mapping',
-            'id_user',
-            'id_tenant'
-        )->withPivot(['role_in_tenant', 'is_primary']);
-    }
-
-    public function tokoAkses()
-    {
-        return $this->belongsToMany(
-            Toko::class,
-            'user_toko_access',
-            'id_user',
-            'id_toko'
-        );
+        return [
+            'email_verified_at' => 'datetime',
+            'password'          => 'hashed',
+            'is_active'         => 'boolean',
+            'is_superadmin'     => 'boolean',
+        ];
     }
 }
