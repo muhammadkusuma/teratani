@@ -11,6 +11,7 @@ use App\Http\Controllers\PiutangController;
 use App\Http\Controllers\ProdukController;
 use App\Http\Controllers\SatuanController;
 use App\Http\Controllers\StokController;
+use App\Http\Controllers\SuperAdminController;
 use App\Http\Controllers\TenantSwitchController;
 use App\Http\Controllers\TokoSwitchController;
 use Illuminate\Support\Facades\Route;
@@ -48,6 +49,8 @@ Route::post('/logout', [AuthController::class, 'logout'])->name('logout')->middl
 // ====================================================
 
 Route::middleware(['auth'])->group(function () {
+    Route::get('/superadmin/dashboard', [SuperAdminController::class, 'index'])
+        ->name('dashboard.superadmin');
 
     // --- PILIH TENANT (Jika user punya banyak bisnis) ---
     // Pastikan TenantSwitchController memiliki method 'index' dan 'switch'
